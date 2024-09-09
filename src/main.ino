@@ -103,8 +103,8 @@ Servo rollServo; //names the servo responsible for ROLL rotation, spins the barr
 
 bool gotIRInput = false;
 
-//const char *adminPassword = "1234";
-const char *adminPassword = "8";
+const char *adminPassword = "1234";
+//const char *adminPassword = "8";
 int currentPasswordIndex = 0;
 
 const int pitchHome = 100;
@@ -113,7 +113,6 @@ const int pitchMin = 50; // this sets the minimum angle of the pitch servo to pr
 const int yawHome = 90;
 const int yawMax = 155; // this sets the maximum angle of the pitch servo to prevent it from crashing, it should remain below 180, and be greater than the pitchMin
 const int yawMin = 25; // this sets the minimum angle of the pitch servo to prevent it from crashing, it should remain above 0, and be less than the pitchMax
-
 
 int yawServoVal = yawHome; //initialize variables to store the current value of each servo
 int pitchServoVal = pitchHome;
@@ -141,6 +140,7 @@ static const int16_t shootDistanceDefault = 500;
 
 Mode CurrentMode  = Mode_Scanning;
 bool sweepLeft = true;
+uint32_t nextCommandTime = 0;
 
 
 //////////////////////////////////////////////////
@@ -183,63 +183,90 @@ void setup()
 
 void loop()
 {
-  int delayTime = 100;
+  uint32_t delayTime = 100;
+  uint32_t currentTime = millis();
 
-  CheckForIRInput();
-  switch (CurrentMode)
+  delayTime = CheckForIRInput();
+  if (delayTime > 0)
   {
-    case Mode_Tracking:
-      delayTime = DoTracking();
-      break;
-
-    case Mode_Admin:
-      delayTime = DoAdmin();
-      break;
-
-    case Mode_Scanning:
-    default:
-      delayTime = DoScanning();
-      break;
+    nextCommandTime = millis() + delayTime;
   }
+  else if (currentTime >= nextCommandTime)
+  {
+    switch (CurrentMode)
+    {
+      case Mode_Tracking:
+        delayTime = DoTracking();
+        break;
 
-  delay(delayTime);
+      case Mode_Admin:
+        delayTime = DoAdmin();
+        break;
+
+      case Mode_Scanning:
+      default:
+        delayTime = DoScanning();
+        break;
+    }
+    nextCommandTime = millis() + delayTime;
+  }
 }
 
-void CheckForIRInput()
+uint32_t CheckForIRInput()
 {
-  gotIRInput = IrReceiver.decode();
-  if (gotIRInput)
+  uint32_t delayTime = 0;
+
+  if (!gotIRInput) // Make sure last input has been handled
   {
-    if (true) // Print errors?
+    gotIRInput = IrReceiver.decode();
+    if (gotIRInput)
     {
-      // Print a short summary of received data
-      IrReceiver.printIRResultShort(&Serial);
-      IrReceiver.printIRSendUsage(&Serial);
-      if (IrReceiver.decodedIRData.protocol == UNKNOWN) //command garbled or not recognized
+      if (false) // Print errors?
+      {
+        // Print a short summary of received data
+        IrReceiver.printIRResultShort(&Serial);
+        IrReceiver.printIRSendUsage(&Serial);
+        if (IrReceiver.decodedIRData.protocol == UNKNOWN) //command garbled or not recognized
+        {
+          Serial.println(F("Received noise or an unknown (or not yet enabled) protocol - if you wish to add this command, define it at the top of the file with the hex code printed below (ex: 0x8)"));
+          // We have an unknown protocol here, print more info
+          IrReceiver.printIRResultRawFormatted(&Serial, true);
+        }
+        Serial.println();
+      }
+      else if (IrReceiver.decodedIRData.protocol == UNKNOWN) //command garbled or not recognized
       {
         Serial.println(F("Received noise or an unknown (or not yet enabled) protocol - if you wish to add this command, define it at the top of the file with the hex code printed below (ex: 0x8)"));
         // We have an unknown protocol here, print more info
         IrReceiver.printIRResultRawFormatted(&Serial, true);
+        Serial.println();
       }
-      Serial.println();
-    }
 
-    /*
-    * !!!Important!!! Enable receiving of the next value,
-    * since receiving has stopped after the end of the current received data packet.
-    */
-    IrReceiver.resume(); // Enable receiving of the next value
+      if (CurrentMode != Mode_Admin)
+      {
+        if (CheckPassword())
+        {
+          Serial.println(F("[CheckForIRInput] Change state to Admin"));
+          CurrentMode = Mode_Admin;
+          shakeHeadYes(3);
+          delayTime = 50;
+        }
+      }
+
+      /*
+      * !!!Important!!! Enable receiving of the next value,
+      * since receiving has stopped after the end of the current received data packet.
+      */
+      IrReceiver.resume(); // Enable receiving of the next value
+    }
   }
+
+  return delayTime;
 }
 
-int DoScanning()
+uint32_t DoScanning()
 {
   Point movement;
-
-  if (CheckPassword())
-  {
-    return 10;
-  }
 
   if (calcHeatMovement(movement))
   {
@@ -263,16 +290,11 @@ int DoScanning()
   }
 }
 
-int DoTracking()
+uint32_t DoTracking()
 {
   Point movement;
-  int delay = 100;
+  uint32_t delay = 100;
   
-  if (CheckPassword())
-  {
-    return 10;
-  }
-
   if (!calcHeatMovement(movement))
   {
     Serial.println(F("[DoTracking] Change state to Scanning"));
@@ -319,7 +341,7 @@ int DoTracking()
   return delay;
 }
 
-int DoAdmin()
+uint32_t DoAdmin()
 {
   if (gotIRInput)
   {
@@ -327,107 +349,114 @@ int DoAdmin()
     {
       case cmd1: // Set shoot distance
       {
+        Serial.println(F("[DoAdmin] Set shoot distance"));
         int16_t distance = getDist();
         SetShootDistance(distance);
         break;
       }
 
       case cmd9: // Exit admin mode
-      Serial.println(F("[DoAdmin] Change state to Scanning"));
+        Serial.println(F("[DoAdmin] Change state to Scanning"));
         CurrentMode = Mode_Scanning;
         break;
 
       case up://pitch up
+        Serial.println(F("[DoAdmin] Move up"));
         upMove(1);
         break;
       
       case down://pitch down
+        Serial.println(F("[DoAdmin] Move down"));
         downMove(1);
         break;
 
       case left://fast counterclockwise rotation
+        Serial.println(F("[DoAdmin] Move left"));
         moveLeft();
         break;
       
       case right://fast clockwise rotation
+        Serial.println(F("[DoAdmin] Move right"));
         moveRight();
         break;
       
       case ok: //firing routine 
+        Serial.println(F("[DoAdmin] FIRE"));
         if ((IrReceiver.decodedIRData.flags & IRDATA_FLAGS_IS_REPEAT) == 0)
           fire(1);
-        //Serial.println(F("FIRE"));
         break;
     }
+    gotIRInput = false; // Mark as handled
   }
   return 100;
 }
 
 bool CheckPassword()
 {
-  if (gotIRInput && (IrReceiver.decodedIRData.flags & IRDATA_FLAGS_IS_REPEAT) == 0)
+  if (gotIRInput)
   {
-    uint8_t pressed = 0xFF;
-    uint8_t val = adminPassword[currentPasswordIndex] - '0';
-
-    switch (IrReceiver.decodedIRData.command)
+    if ((IrReceiver.decodedIRData.flags & IRDATA_FLAGS_IS_REPEAT) == 0)
     {
-      case cmd1:
-        pressed = 1;
-        break;
-      case cmd2:
-        pressed = 2;
-        break;
-      case cmd3:
-        pressed = 3;
-        break;
-      case cmd4:
-        pressed = 4;
-        break;
-      case cmd5:
-        pressed = 5;
-        break;
-      case cmd6:
-        pressed = 6;
-        break;
-      case cmd7:
-        pressed = 7;
-        break;
-      case cmd8:
-        pressed = 8;
-        break;
-      case cmd9:
-        pressed = 9;
-        break;
-      case cmd0:
-        pressed = 0;
-        break;
-    }
+      uint8_t pressed = 0xFF;
+      uint8_t val = adminPassword[currentPasswordIndex] - '0';
 
-    Serial.print(F("[CheckPassword] pressed="));
-    Serial.print(pressed);
-    Serial.print(F(", currentPasswordIndex="));
-    Serial.print(currentPasswordIndex);
-    Serial.print(F(", PW[ix]="));
-    Serial.println(val);
-
-    if (pressed == val)
-    {
-      Serial.println(F("[CheckPassword] PW Step Right"));
-      currentPasswordIndex++;
-      if (currentPasswordIndex == strlen(adminPassword))
+      switch (IrReceiver.decodedIRData.command)
       {
-        Serial.println(F("[CheckPassword] Change state to Admin"));
-        CurrentMode = Mode_Admin;
-        shakeHeadYes(3);
-        return true; 
+        case cmd1:
+          pressed = 1;
+          break;
+        case cmd2:
+          pressed = 2;
+          break;
+        case cmd3:
+          pressed = 3;
+          break;
+        case cmd4:
+          pressed = 4;
+          break;
+        case cmd5:
+          pressed = 5;
+          break;
+        case cmd6:
+          pressed = 6;
+          break;
+        case cmd7:
+          pressed = 7;
+          break;
+        case cmd8:
+          pressed = 8;
+          break;
+        case cmd9:
+          pressed = 9;
+          break;
+        case cmd0:
+          pressed = 0;
+          break;
+      }
+
+      Serial.print(F("[CheckPassword] pressed="));
+      Serial.print(pressed);
+      Serial.print(F(", currentPasswordIndex="));
+      Serial.print(currentPasswordIndex);
+      Serial.print(F(", PW[ix]="));
+      Serial.println(val);
+
+      if (pressed == val)
+      {
+        Serial.println(F("[CheckPassword] PW Step Right"));
+        currentPasswordIndex++;
+        if (currentPasswordIndex == strlen(adminPassword))
+        {
+          return true; 
+        }
+      }
+      else
+      {
+        Serial.println(F("[CheckPassword] PW Wrong"));
+        currentPasswordIndex = 0;
       }
     }
-    else
-    {
-      Serial.println(F("[CheckPassword] PW Wrong"));
-      currentPasswordIndex = 0;
-    }
+    gotIRInput = false;
   }
   return false;
 }
@@ -490,8 +519,8 @@ bool moveLeft()
   {
     yawServoVal += yawMoveSpeed; //decrement the current angle and update
     yawServo.write(yawServoVal);
-    //***Serial.print(F("LEFT TO "));
-    //***Serial.println(yawServoVal);
+    //Serial.print(F("LEFT TO "));
+    //Serial.println(yawServoVal);
     return true;
   }
   else
@@ -504,8 +533,8 @@ bool moveRight()
   {
     yawServoVal -= yawMoveSpeed; //decrement the current angle and update
     yawServo.write(yawServoVal);
-    //***Serial.print(F("RIGHT TO "));
-    //***Serial.println(yawServoVal);
+    //Serial.print(F("RIGHT TO "));
+    //Serial.println(yawServoVal);
     return true;
   }
   else
@@ -520,8 +549,7 @@ void upMove(int moves)
     {
       pitchServoVal = pitchServoVal - pitchMoveSpeed; //decrement the current angle and update
       pitchServo.write(pitchServoVal);
-      delay(50);
-      Serial.println(F("UP"));
+      //Serial.println(F("UP"));
     }
   }
 }
@@ -534,8 +562,7 @@ void downMove (int moves)
     {
       pitchServoVal = pitchServoVal + pitchMoveSpeed;//increment the current angle and update
       pitchServo.write(pitchServoVal);
-      delay(50);
-      Serial.println(F("DOWN"));
+      //Serial.println(F("DOWN"));
     }
   }
 }
@@ -549,7 +576,7 @@ void fire(int num)
   delay(rollPrecision * num);//time for approximately 60 degrees of rotation
   rollServo.write(rollStopSpeed);//stop rotating the servo
   delay(5); //delay for smoothness
-  Serial.println(F("FIRING"));
+  //Serial.println(F("FIRING"));
 }
 
 void fireAll() //function to fire all 6 darts at once
@@ -567,7 +594,6 @@ void homeServos()
   yawServo.write(yawServoVal);
   pitchServoVal = pitchHome; // store the pitch servo value
   pitchServo.write(pitchServoVal); //set PITCH servo to 100 degree position
-  delay(100);
   Serial.println(F("HOMING"));
 }
    
@@ -665,65 +691,6 @@ bool calcHeatMovement(Point &movementToTarget)
   }
 
   return isHot;
-}
-
-void testHeatOutput()
-{
-  int statusCode = sensor.updateThermistorTemperature();
-  if (statusCode < 0)
-  {
-    Serial.print(F("updateThermistorTemperature="));
-    Serial.println(sensor.getErrorDescription(statusCode));
-  }
-  statusCode = sensor.updatePixelMatrix();
-  if (statusCode < 0)
-  {
-    Serial.print(F("updatePixelMatrix="));
-    Serial.println(sensor.getErrorDescription(statusCode));
-  }
-  // Temp intensity appears to range between about 20-40
-
-  //pin_times: X0Y0, X0Y1, X1Y0, X1Y1
-
-  float max_intensity = 0;
-  float min_intensity = 1000;
-
-  for (uint8_t x = 0; x < SENSOR_ARRAY_X; x++)
-    sensorDataY[x] = 0.0;
-  for (uint8_t y = 0; y < SENSOR_ARRAY_Y; y++)
-    sensorDataX[y] = 0.0;
-
-  // loop through pixels to find min/max value
-  for (uint8_t x = 0; x < SENSOR_ARRAY_X; x++)
-  {
-    for (uint8_t y = 0; y < SENSOR_ARRAY_Y; y++)
-    {
-      float pixel_intensity = sensor.pixelMatrix[y][x];
-      if (pixel_intensity < min_intensity)
-        min_intensity = pixel_intensity;
-    }
-  }
-
-  // loop through pixels to find min/max value
-  for (uint8_t x = 0; x < SENSOR_ARRAY_X; x++)
-  {
-    for (uint8_t y = 0; y < SENSOR_ARRAY_Y; y++)
-    {
-      float pixel_intensity = sensor.pixelMatrix[y][x];
-      if (pixel_intensity < TEMPERATURE_BOTTOM)
-        pixel_intensity = TEMPERATURE_BOTTOM;
-      else if (pixel_intensity >= TEMPERATURE_CEILING)
-        pixel_intensity = TEMPERATURE_CEILING;
-      pixel_intensity -= min_intensity;
-      sensorDataY[x] += pixel_intensity;
-      sensorDataX[y] += pixel_intensity;
-    }
-  }
-
-  for (uint8_t x = 0; x < SENSOR_ARRAY_X; x++)
-    sensorDataY[x] /= SENSOR_ARRAY_Y;
-  for (uint8_t y = 0; y < SENSOR_ARRAY_Y; y++)
-    sensorDataX[y] /= SENSOR_ARRAY_X;
 }
 
 int16_t getDist()
