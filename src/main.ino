@@ -37,6 +37,7 @@
 #include <IRremote.hpp>
 #include <time.h>
 
+#undef FPS_10  // one library #defines this and another library uses it in an enum. I only care about the enum, so undef it.
 
 /*
 ** if you want to add other remotes (as long as they're on the same protocol above):
